@@ -79,7 +79,6 @@ def show_results(img, xyxy, conf, landmarks, class_num):
     cv2.putText(img, label, (x1, y1 - 2), 0, tl / 3, [225, 255, 255], thickness=tf, lineType=cv2.LINE_AA)
     return img
 
-
 def detect(
     model,
     source,
@@ -88,31 +87,36 @@ def detect(
     name,
     exist_ok,
     save_img,
-    view_img
+    view_img,
+    save_txt=False, 
+    save_empty=False        
 ):
-    # Load model
     img_size = 640
     conf_thres = 0.6
     iou_thres = 0.5
     imgsz=(640, 640)
     
     # Directories
-    save_dir = increment_path(Path(project) / name, exist_ok=exist_ok)  # increment run
-    Path(save_dir).mkdir(parents=True, exist_ok=True)  # make dir
+    save_dir = increment_path(Path(project) / name, exist_ok=exist_ok)
+    Path(save_dir).mkdir(parents=True, exist_ok=True)
+    # Initialize
+    labels_dir = Path(save_dir) / 'labels'
+    if save_txt:
+        labels_dir.mkdir(parents=True, exist_ok=True)
 
+    
     is_file = Path(source).suffix[1:] in (img_formats + vid_formats)
     is_url = source.lower().startswith(('rtsp://', 'rtmp://', 'http://', 'https://'))
     webcam = source.isnumeric() or source.endswith('.txt') or (is_url and not is_file)
     
-    # Dataloader
     if webcam:
         print('loading streams:', source)
         dataset = LoadStreams(source, img_size=imgsz)
-        bs = 1  # batch_size
+        bs = 1
     else:
         print('loading images', source)
         dataset = LoadImages(source, img_size=imgsz)
-        bs = 1  # batch_size
+        bs = 1
     vid_path, vid_writer = [None] * bs, [None] * bs
     
     for path, im, im0s, vid_cap in dataset:
@@ -124,102 +128,120 @@ def detect(
         
         orgimg = cv2.cvtColor(orgimg, cv2.COLOR_BGR2RGB)
         img0 = copy.deepcopy(orgimg)
-        h0, w0 = orgimg.shape[:2]  # orig hw
-        r = img_size / max(h0, w0)  # resize image to img_size
-        if r != 1:  # always resize down, only resize up if training with augmentation
+        h0, w0 = orgimg.shape[:2]
+        r = img_size / max(h0, w0)
+        if r != 1:
             interp = cv2.INTER_AREA if r < 1  else cv2.INTER_LINEAR
             img0 = cv2.resize(img0, (int(w0 * r), int(h0 * r)), interpolation=interp)
 
-        imgsz = check_img_size(img_size, s=model.stride.max())  # check img_size
+        imgsz = check_img_size(img_size, s=model.stride.max())
 
         img = letterbox(img0, new_shape=imgsz)[0]
-        # Convert from w,h,c to c,w,h
         img = img.transpose(2, 0, 1).copy()
 
         img = torch.from_numpy(img).to(device)
-        img = img.float()  # uint8 to fp16/32
-        img /= 255.0  # 0 - 255 to 0.0 - 1.0
+        img = img.float()
+        img /= 255.0
         if img.ndimension() == 3:
             img = img.unsqueeze(0)
 
         # Inference
         pred = model(img)[0]
-        
-        # Apply NMS
         pred = non_max_suppression_face(pred, conf_thres, iou_thres)
         print(len(pred[0]), 'face' if len(pred[0]) == 1 else 'faces')
 
-        # Process detections
-        for i, det in enumerate(pred):  # detections per image
-            
-            if webcam:  # batch_size >= 1
-                p, im0, frame = path[i], im0s[i].copy(), dataset.count
-            else:
-                p, im0, frame = path, im0s.copy(), getattr(dataset, 'frame', 0)
-            
-            p = Path(p)  # to Path
-            save_path = str(Path(save_dir) / p.name)  # im.jpg
+        # Name of the image file being processed
+        if webcam:
+            p, im0, frame = path[0], im0s[0].copy(), dataset.count
+        else:
+            p, im0, frame = path, im0s.copy(), getattr(dataset, 'frame', 0)
+        p = Path(p)
+        save_path_img = str(Path(save_dir) / p.name)
+
+        # Path of the label .txt (one per image; for video add frame index)
+        if save_txt:
+            base_stem = (p.stem if dataset.mode == 'image' else f"{p.stem}_frame{frame:06d}")
+            label_path = labels_dir / f"{base_stem}.txt"
+
+        for i, det in enumerate(pred):
+            wrote_any = False  # <-- NEW: to know if there were detections
 
             if len(det):
-                # Rescale boxes from img_size to im0 size
+                # rescale boxes from img_size to im0 size
                 det[:, :4] = scale_coords(img.shape[2:], det[:, :4], im0.shape).round()
-
-                # Print results
-                for c in det[:, -1].unique():
-                    n = (det[:, -1] == c).sum()  # detections per class
-
                 det[:, 5:15] = scale_coords_landmarks(img.shape[2:], det[:, 5:15], im0.shape).round()
 
-                for j in range(det.size()[0]):
+                # Draw results
+                lines = []  # List to store lines for the .txt file
+                for j in range(det.size(0)):
+                    # xyxy, conf, landmarks, class_num
                     xyxy = det[j, :4].view(-1).tolist()
-                    conf = det[j, 4].cpu().numpy()
+                    conf = float(det[j, 4].cpu().numpy())
                     landmarks = det[j, 5:15].view(-1).tolist()
                     class_num = det[j, 15].cpu().numpy()
-                    
+
                     im0 = show_results(im0, xyxy, conf, landmarks, class_num)
-            
+
+                    if save_txt:
+                        x1, y1, x2, y2 = xyxy
+                        # Save as: score x1 y1 x2 y2    
+                        lines.append(f"{conf:.6f} {int(x1)} {int(y1)} {int(x2)} {int(y2)}")
+                        wrote_any = True
+
+                if save_txt and lines:
+                    with open(label_path, "w") as f:
+                        f.write("\n".join(lines))
+
+            # If no detections and you still want an empty file
+            if save_txt and save_empty and not wrote_any:
+                # create empty file (or truncate if it already existed)
+                open(label_path, "w").close()
+
+            # Show window
             if view_img:
                 cv2.imshow('result', im0)
                 k = cv2.waitKey(1)
-                    
-            # Save results (image with detections)
+
+            # Save image/video
             if save_img:
                 if dataset.mode == 'image':
-                    cv2.imwrite(save_path, im0)
-                else:  # 'video' or 'stream'
-                    if vid_path[i] != save_path:  # new video
-                        vid_path[i] = save_path
+                    cv2.imwrite(save_path_img, im0)
+                else:
+                    i = 0
+                    if vid_path[i] != save_path_img:
+                        vid_path[i] = save_path_img
                         if isinstance(vid_writer[i], cv2.VideoWriter):
-                            vid_writer[i].release()  # release previous video writer
-                        if vid_cap:  # video
+                            vid_writer[i].release()
+                        if vid_cap:
                             fps = vid_cap.get(cv2.CAP_PROP_FPS)
                             w = int(vid_cap.get(cv2.CAP_PROP_FRAME_WIDTH))
                             h = int(vid_cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-                        else:  # stream
+                        else:
                             fps, w, h = 30, im0.shape[1], im0.shape[0]
-                        save_path = str(Path(save_path).with_suffix('.mp4'))  # force *.mp4 suffix on results videos
-                        vid_writer[i] = cv2.VideoWriter(save_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (w, h))
+                        save_video_path = str(Path(save_path_img).with_suffix('.mp4'))
+                        vid_writer[i] = cv2.VideoWriter(save_video_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (w, h))
                     try:
                         vid_writer[i].write(im0)
                     except Exception as e:
                         print(e)
 
-                    
-            
-
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--weights', nargs='+', type=str, default='runs/train/exp5/weights/last.pt', help='model.pt path(s)')
-    parser.add_argument('--source', type=str, default='0', help='source')  # file/folder, 0 for webcam
+    parser.add_argument('--source', type=str, default='0', help='source')
     parser.add_argument('--img-size', type=int, default=640, help='inference size (pixels)')
     parser.add_argument('--project', default=ROOT / 'runs/detect', help='save results to project/name')
     parser.add_argument('--name', default='exp', help='save results to project/name')
     parser.add_argument('--exist-ok', action='store_true', help='existing project/name ok, do not increment')
     parser.add_argument('--save-img', action='store_true', help='save results')
     parser.add_argument('--view-img', action='store_true', help='show results')
+    # New arguments
+    parser.add_argument('--save-txt', action='store_true', help='save labels to labels/*.txt as "score x1 y1 x2 y2"')
+    parser.add_argument('--save-empty', action='store_true', help='also write empty .txt when no detections')
     opt = parser.parse_args()
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = load_model(opt.weights, device)
-    detect(model, opt.source, device, opt.project, opt.name, opt.exist_ok, opt.save_img, opt.view_img)
+    detect(model, opt.source, device, opt.project, opt.name, opt.exist_ok, opt.save_img, opt.view_img,
+           save_txt=opt.save_txt, save_empty=opt.save_empty)
