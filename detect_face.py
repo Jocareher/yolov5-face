@@ -65,7 +65,7 @@ def show_results(img, xyxy, conf, landmarks, class_num):
     y2 = int(xyxy[3])
     img = img.copy()
     
-    cv2.rectangle(img, (x1,y1), (x2, y2), (0,255,0), thickness=tl, lineType=cv2.LINE_AA)
+    cv2.rectangle(img, (x1,y1), (x2, y2), (0,127,255), thickness=tl, lineType=cv2.LINE_AA)
 
     clors = [(255,0,0),(0,255,0),(0,0,255),(255,255,0),(0,255,255)]
 
@@ -83,6 +83,7 @@ def detect(
     model,
     source,
     device,
+    conf_thres,
     project,
     name,
     exist_ok,
@@ -92,12 +93,11 @@ def detect(
     save_empty=False        
 ):
     img_size = 640
-    conf_thres = 0.6
     iou_thres = 0.5
     imgsz=(640, 640)
     
     # Directories
-    save_dir = increment_path(Path(project) / name, exist_ok=exist_ok)
+    save_dir = increment_path(Path(project), exist_ok=exist_ok)
     Path(save_dir).mkdir(parents=True, exist_ok=True)
     # Initialize
     labels_dir = Path(save_dir) / 'labels'
@@ -231,7 +231,8 @@ if __name__ == '__main__':
     parser.add_argument('--weights', nargs='+', type=str, default='runs/train/exp5/weights/last.pt', help='model.pt path(s)')
     parser.add_argument('--source', type=str, default='0', help='source')
     parser.add_argument('--img-size', type=int, default=640, help='inference size (pixels)')
-    parser.add_argument('--project', default=ROOT / 'runs/detect', help='save results to project/name')
+    parser.add_argument('--conf_thres', type=float, default=0.6, help='confidence threshold')
+    parser.add_argument('--project', help='save results to project/name')
     parser.add_argument('--name', default='exp', help='save results to project/name')
     parser.add_argument('--exist-ok', action='store_true', help='existing project/name ok, do not increment')
     parser.add_argument('--save-img', action='store_true', help='save results')
@@ -243,5 +244,5 @@ if __name__ == '__main__':
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = load_model(opt.weights, device)
-    detect(model, opt.source, device, opt.project, opt.name, opt.exist_ok, opt.save_img, opt.view_img,
+    detect(model, opt.source, device, opt.conf_thres, opt.project, opt.name, opt.exist_ok, opt.save_img, opt.view_img,
            save_txt=opt.save_txt, save_empty=opt.save_empty)
